@@ -1,18 +1,22 @@
 # ==========================================================
 # PLU Sales + Supplier Profitability Dashboard (CLEAN DF)
-# + Space Occupiers (Low-selling items) Export
-# + NEW: Stock on hand for Space Occupiers (what's left in stock)
+# + Space Occupiers Export (with Latest Stock)
+# + NEW: Month/Year filter to view month-wise sales performance
+#        and identify top-selling items for a selected month/year
 # ==========================================================
-# New change:
-# - Add a column showing the latest stock quantity for each "space occupier"
-#   (last known STOCK value for that item in the dataset).
+# Added in this version:
+# - Sidebar "📆 Month/Year Performance" controls:
+#     * Pick Year + Month
+#     * See Top items sold in that Month/Year (by units)
+#     * Optional: Also show Top items by PROFIT for that Month/Year
+#     * Monthly trend for selected item remains in Item Profile section
 #
 # Notes:
-# - We read Excel with header=4 (Excel row 5 is header).
-# - DATE is the first column by position even if the header cell is weird.
-# - PLU column header may be "1" (we map it to PLU_CODE).
-# - GROUP contains tags like [CATEGORY][SUP1][SUP2]...
-# - USAGE is units sold; STOCK is what you have left (as per your sheet).
+# - header=4 (Excel row 5 is header)
+# - DATE is first column by position even if header cell is weird
+# - PLU column header may be "1" -> mapped to PLU_CODE
+# - GROUP contains tags: [CATEGORY][SUP1][SUP2]...
+# - USAGE is units sold; STOCK is remaining stock
 # ==========================================================
 
 import re
@@ -152,7 +156,6 @@ def latest_stock_per_item(df_full: pd.DataFrame) -> pd.DataFrame:
     Uses the last non-null STOCK value in time order.
     """
     tmp = df_full.sort_values(["PLU_CODE", "DESCRIPTION", "DATE"]).copy()
-    # If stock has missing values, forward fill within item so last row has best known value
     tmp["STOCK_FFILL"] = tmp.groupby(["PLU_CODE", "DESCRIPTION"])["STOCK"].ffill()
     out = (
         tmp.groupby(["PLU_CODE", "DESCRIPTION"], as_index=False)
@@ -242,7 +245,7 @@ except Exception as e:
 # -----------------------
 # SIDEBAR: GLOBAL FILTERS
 # -----------------------
-st.sidebar.header("🎛️ Filters")
+st.sidebar.header("🎛️ Global Filters")
 
 date_window = st.sidebar.selectbox(
     "Date range (applies to most sections)",
@@ -262,13 +265,43 @@ else:
     dff = df.copy()
 
 # ==========================================================
+# NEW: MONTH/YEAR PERFORMANCE FILTER (independent view)
+# ==========================================================
+st.sidebar.header("📆 Month/Year Performance")
+
+available_years = sorted(df["YEAR"].dropna().unique().tolist())
+month_names = [
+    (1, "Jan"), (2, "Feb"), (3, "Mar"), (4, "Apr"), (5, "May"), (6, "Jun"),
+    (7, "Jul"), (8, "Aug"), (9, "Sep"), (10, "Oct"), (11, "Nov"), (12, "Dec")
+]
+
+if available_years:
+    my_year = st.sidebar.selectbox("Year", available_years, index=len(available_years) - 1)
+    # months available in that year
+    months_in_year = sorted(df[df["YEAR"] == my_year]["MONTH"].dropna().unique().tolist())
+    month_options = [(m, dict(month_names).get(m, str(m))) for m in months_in_year] if months_in_year else month_names
+    my_month = st.sidebar.selectbox(
+        "Month",
+        [m for m, _ in month_options],
+        format_func=lambda m: dict(month_names).get(m, str(m)),
+        index=len(month_options) - 1 if month_options else 0
+    )
+else:
+    my_year, my_month = None, None
+
+# Monthly filtered df is based on FULL data (df), not the 7/30/60/90 filter.
+month_df = pd.DataFrame()
+if my_year is not None and my_month is not None:
+    month_df = df[(df["YEAR"] == my_year) & (df["MONTH"] == my_month)].copy()
+
+# ==========================================================
 # SECTION 0: SPACE OCCUPIERS (LOW-SELLERS) + EXCEL EXPORT
 # ==========================================================
 st.subheader("🧱 Space Occupiers (Low-selling / barely-moving items)")
 
 st.caption(
     "Find items that sold very little in a recent lookback window. "
-    "Now includes LATEST STOCK (what you have left on hand)."
+    "Includes LATEST STOCK (what you have left on hand)."
 )
 
 colA, colB, colC, colD = st.columns(4)
@@ -286,7 +319,6 @@ start_dt = end_dt - pd.Timedelta(days=low_lookback_days - 1)
 
 lookback_df = df[(df["DATE"] >= start_dt) & (df["DATE"] <= end_dt)].copy()
 
-# Aggregations in lookback
 lookback_item = (
     lookback_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)
                .agg(
@@ -298,7 +330,6 @@ lookback_item = (
                .reset_index()
 )
 
-# FIRST/LAST sold dates overall
 ever_item = (
     df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)
       .agg(
@@ -308,7 +339,6 @@ ever_item = (
       .reset_index()
 )
 
-# Best supplier by profit (lookback)
 best_supplier_profit = (
     lookback_df.groupby(["PLU_CODE", "DESCRIPTION", "SUPPLIER_RESOLVED"], dropna=False)["PROFIT"]
               .sum()
@@ -322,7 +352,6 @@ best_supplier_profit = (
                         [["PLU_CODE", "DESCRIPTION", "BEST_SUPPLIER_BY_PROFIT", "SUPPLIER_PROFIT_LOOKBACK"]]
 )
 
-# Category mode
 cat_mode = (
     df.dropna(subset=["CATEGORY"])
       .groupby(["PLU_CODE", "DESCRIPTION"])["CATEGORY"]
@@ -330,7 +359,6 @@ cat_mode = (
       .reset_index()
 )
 
-# Latest stock per item (whole dataset)
 stock_latest = latest_stock_per_item(df)
 
 space = (
@@ -343,7 +371,6 @@ space = (
 space["DAYS_SINCE_LAST_SOLD_EVER"] = (end_dt - space["LAST_SOLD_DATE_EVER"]).dt.days
 space["DAYS_SINCE_LAST_SOLD_LOOKBACK"] = (end_dt - space["LAST_SOLD_DATE_LOOKBACK"]).dt.days
 
-# LOSS_% calculation (profit-based)
 space["LOSS_%"] = np.nan
 sales_ok = space["TOTAL_SALES_LOOKBACK"].fillna(0) > 0
 neg_profit = space["TOTAL_PROFIT_LOOKBACK"] < 0
@@ -359,14 +386,12 @@ space.loc[fallback_mask, "LOSS_%"] = (
      / (space.loc[fallback_mask, "TOTAL_PROFIT_LOOKBACK"].abs() + 1)) * 100
 ).round(2)
 
-# Filter: low units + optional stale + optional stock constraint
 space_filtered = space[space["TOTAL_UNITS_LOOKBACK"] <= max_units_threshold].copy()
 if stale_days > 0:
     space_filtered = space_filtered[space_filtered["DAYS_SINCE_LAST_SOLD_EVER"] >= stale_days].copy()
 if stock_min > 0:
     space_filtered = space_filtered[space_filtered["LATEST_STOCK"].fillna(0) >= stock_min].copy()
 
-# Sort: least sold, most stale, highest stock, then highest loss%
 space_filtered = space_filtered.sort_values(
     ["TOTAL_UNITS_LOOKBACK", "DAYS_SINCE_LAST_SOLD_EVER", "LATEST_STOCK", "LOSS_%"],
     ascending=[True, False, False, False]
@@ -389,9 +414,7 @@ show_cols = [
     "LOSS_%"
 ]
 
-st.write(
-    f"Lookback: **{start_dt.date()} → {end_dt.date()}** | Items shown: **{len(space_filtered)}**"
-)
+st.write(f"Lookback: **{start_dt.date()} → {end_dt.date()}** | Items shown: **{len(space_filtered)}**")
 st.dataframe(space_filtered[show_cols], use_container_width=True, height=420)
 
 st.download_button(
@@ -407,9 +430,69 @@ st.caption(
 )
 
 # ==========================================================
-# SECTION 1: TOP SOLD ITEMS (TOTALS)
+# NEW SECTION: MONTH/YEAR TOP ITEMS (Units + Profit)
 # ==========================================================
-st.subheader("🏆 Top Sold Items (Total Units in selected range)")
+st.subheader("📆 Month-wise Sales Performance (Pick Month + Year)")
+
+if my_year is None or my_month is None or month_df.empty:
+    st.info("Select a Year and Month from the sidebar (📆 Month/Year Performance) to view month-wise results.")
+else:
+    left, right = st.columns([2, 1])
+    with right:
+        month_top_n = st.number_input("Top N items (Month/Year)", min_value=10, max_value=500, value=50, step=10)
+        month_rank_by = st.selectbox("Rank by", ["Units Sold", "Profit"], index=0)
+
+    month_items = (
+        month_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)
+                .agg(
+                    TOTAL_UNITS=(units_col, "sum"),
+                    TOTAL_PROFIT=("PROFIT", "sum"),
+                    TOTAL_SALES=("TOTAL_SALES", "sum"),
+                    DAYS=("DATE", "nunique"),
+                )
+                .reset_index()
+    )
+    month_items["PROFIT_PER_UNIT"] = np.where(
+        month_items["TOTAL_UNITS"] > 0,
+        month_items["TOTAL_PROFIT"] / month_items["TOTAL_UNITS"],
+        0
+    )
+
+    if month_rank_by == "Units Sold":
+        month_items = month_items.sort_values(["TOTAL_UNITS", "TOTAL_PROFIT"], ascending=[False, False])
+    else:
+        month_items = month_items.sort_values(["TOTAL_PROFIT", "TOTAL_UNITS"], ascending=[False, False])
+
+    with left:
+        month_label = dict([(k, v) for k, v in month_names]).get(my_month, str(my_month))
+        st.markdown(f"### Top items for **{month_label} {my_year}**")
+        st.dataframe(month_items.head(int(month_top_n)), use_container_width=True, height=420)
+
+    # Quick highlight: #1 item
+    if not month_items.empty:
+        best = month_items.iloc[0]
+        if month_rank_by == "Units Sold":
+            st.success(
+                f"🏆 Top-selling item in **{month_label} {my_year}** by **Units**: "
+                f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Units: {int(best['TOTAL_UNITS'])}"
+            )
+        else:
+            st.success(
+                f"🏆 Top item in **{month_label} {my_year}** by **Profit**: "
+                f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Profit: {best['TOTAL_PROFIT']:.2f}"
+            )
+
+    st.download_button(
+        "⬇️ Download Month/Year Top Items (Excel)",
+        data=df_to_excel_bytes(month_items, sheet_name="month_top_items"),
+        file_name=f"top_items_{my_year}_{my_month:02d}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+# ==========================================================
+# SECTION 1: TOP SOLD ITEMS (TOTALS) in selected date_window
+# ==========================================================
+st.subheader("🏆 Top Sold Items (Total Units in selected date range)")
 
 top_items = (
     dff.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)[units_col]
@@ -418,25 +501,25 @@ top_items = (
        .sort_values("TOTAL_UNITS", ascending=False)
 )
 
-top_n = st.number_input("Show Top N items", min_value=10, max_value=500, value=50, step=10)
+top_n = st.number_input("Show Top N items (date range)", min_value=10, max_value=500, value=50, step=10)
 st.dataframe(top_items.head(int(top_n)), use_container_width=True, height=320)
 
 # ==========================================================
-# SECTION 2: MONTH/YEAR TOTALS FOR ALL ITEMS
+# SECTION 2: MONTH/YEAR TOTALS FOR ALL ITEMS (within date_window)
 # ==========================================================
-with st.expander("📅 Monthly totals view (All items)"):
+with st.expander("📅 Monthly totals view (All items within selected date range)"):
     years = sorted(dff["YEAR"].unique().tolist())
     if years:
-        y = st.selectbox("Year", years, index=len(years) - 1)
+        y = st.selectbox("Year (date range)", years, index=len(years) - 1)
         months = sorted(dff[dff["YEAR"] == y]["MONTH"].unique().tolist())
-        m = st.selectbox("Month", months, index=len(months) - 1) if months else 1
+        m = st.selectbox("Month (date range)", months, index=len(months) - 1) if months else 1
 
-        month_df = dff[(dff["YEAR"] == y) & (dff["MONTH"] == m)]
+        month_df2 = dff[(dff["YEAR"] == y) & (dff["MONTH"] == m)]
         month_totals = (
-            month_df.groupby(["PLU_CODE", "DESCRIPTION"])[units_col]
-                    .sum()
-                    .reset_index(name="TOTAL_UNITS_MONTH")
-                    .sort_values("TOTAL_UNITS_MONTH", ascending=False)
+            month_df2.groupby(["PLU_CODE", "DESCRIPTION"])[units_col]
+                     .sum()
+                     .reset_index(name="TOTAL_UNITS_MONTH")
+                     .sort_values("TOTAL_UNITS_MONTH", ascending=False)
         )
         st.dataframe(month_totals.head(100), use_container_width=True, height=350)
     else:
@@ -554,7 +637,7 @@ if selected_item:
 # ==========================================================
 # SECTION 4: TOP ITEMS BY SUPPLIER (UNITS + PROFIT)
 # ==========================================================
-st.subheader("🏷️ Top Items by Supplier (Units + Profit in selected range)")
+st.subheader("🏷️ Top Items by Supplier (Units + Profit in selected date range)")
 
 suppliers = sorted(dff["SUPPLIER_RESOLVED"].dropna().unique().tolist())
 if not suppliers:
@@ -603,7 +686,10 @@ prev_sum = prev.groupby(["PLU_CODE", "DESCRIPTION"])[units_col].sum().reset_inde
 
 movers = recent_sum.merge(prev_sum, on=["PLU_CODE", "DESCRIPTION"], how="outer").fillna(0)
 
-min_units = st.number_input("Minimum units (either period) to be considered (movers only)", min_value=1, max_value=500, value=10, step=1)
+min_units = st.number_input(
+    "Minimum units (either period) to be considered (movers only)",
+    min_value=1, max_value=500, value=10, step=1
+)
 movers = movers[(movers["RECENT_UNITS"] >= min_units) | (movers["PREV_UNITS"] >= min_units)].copy()
 
 movers["DELTA"] = movers["RECENT_UNITS"] - movers["PREV_UNITS"]
