@@ -2,11 +2,11 @@
 # PLU Sales + Supplier Profitability Dashboard (CLEAN DF)
 # + Space Occupiers (Low-selling items) Export
 # + Stock on hand for Space Occupiers (latest stock)
-# + Month-wise performance (REFactored):
+# + Month-wise performance (Refactored):
 #     - TOTAL_UNITS_MONTH
 #     - TOTAL_PROFIT_MONTH
 #     - TOTAL_UNITS_PER_DAY (avg per active day)
-#     - (REMOVED: DAYS column from month-wise section)
+#     - NEW: Item name search filter inside Month-wise section
 # ==========================================================
 
 import re
@@ -329,7 +329,6 @@ space = (
 )
 
 space["DAYS_SINCE_LAST_SOLD_EVER"] = (end_dt - space["LAST_SOLD_DATE_EVER"]).dt.days
-space["DAYS_SINCE_LAST_SOLD_LOOKBACK"] = (end_dt - space["LAST_SOLD_DATE_LOOKBACK"]).dt.days
 
 space["LOSS_%"] = np.nan
 sales_ok = space["TOTAL_SALES_LOOKBACK"].fillna(0) > 0
@@ -366,7 +365,6 @@ show_cols = [
     "LATEST_STOCK",
     "STOCK_ASOF_DATE",
     "FIRST_SOLD_DATE",
-    "LAST_SOLD_DATE_LOOKBACK",
     "LAST_SOLD_DATE_EVER",
     "DAYS_SINCE_LAST_SOLD_EVER",
     "TOTAL_PROFIT_LOOKBACK",
@@ -400,7 +398,8 @@ top_n = st.number_input("Show Top N items (date range)", min_value=10, max_value
 st.dataframe(top_items.head(int(top_n)), use_container_width=True, height=320)
 
 # ==========================================================
-# REFACTORED: MONTH/YEAR TOP ITEMS (Units + Profit + Units/Day)
+# MONTH/YEAR TOP ITEMS (Units + Profit + Units/Day)
+# + NEW: Item name search inside this filter
 # ==========================================================
 st.subheader("📆 Month-wise Sales Performance (Pick Month + Year)")
 
@@ -416,72 +415,82 @@ with st.expander("Open Month/Year filter (independent from 7/30/60/90 filter)", 
     else:
         col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
         with col1:
-            my_year = st.selectbox("Year", available_years, index=len(available_years) - 1)
+            my_year = st.selectbox("Year", available_years, index=len(available_years) - 1, key="mw_year")
         with col2:
             months_in_year = sorted(df[df["YEAR"] == my_year]["MONTH"].dropna().unique().tolist())
             my_month = st.selectbox(
                 "Month",
                 months_in_year if months_in_year else list(month_names.keys()),
                 format_func=lambda m: month_names.get(m, str(m)),
-                index=(len(months_in_year) - 1) if months_in_year else 0
+                index=(len(months_in_year) - 1) if months_in_year else 0,
+                key="mw_month"
             )
         with col3:
-            month_top_n = st.number_input("Top N", min_value=10, max_value=500, value=50, step=10)
+            month_top_n = st.number_input("Top N", min_value=10, max_value=500, value=50, step=10, key="mw_topn")
         with col4:
-            month_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS_MONTH", "TOTAL_PROFIT_MONTH"], index=0)
+            month_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS_MONTH", "TOTAL_PROFIT_MONTH"], index=0, key="mw_rank")
+
+        # NEW: item name search inside month-wise
+        month_search = st.text_input("Search item name in this month (optional, min 3 letters)", value="", key="mw_search")
 
         month_df = df[(df["YEAR"] == my_year) & (df["MONTH"] == my_month)].copy()
 
         if month_df.empty:
             st.warning("No rows found for that month/year.")
         else:
-            # Aggregate month totals per item
             month_items = (
                 month_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)
                         .agg(
                             TOTAL_UNITS_MONTH=(units_col, "sum"),
                             TOTAL_PROFIT_MONTH=("PROFIT", "sum"),
-                            ACTIVE_DAYS_MONTH=("DATE", "nunique"),  # internal helper only
+                            _ACTIVE_DAYS=("DATE", "nunique"),  # internal only
                         )
                         .reset_index()
             )
-            # Total units per active day (your requested metric)
+
             month_items["TOTAL_UNITS_PER_DAY"] = np.where(
-                month_items["ACTIVE_DAYS_MONTH"] > 0,
-                month_items["TOTAL_UNITS_MONTH"] / month_items["ACTIVE_DAYS_MONTH"],
+                month_items["_ACTIVE_DAYS"] > 0,
+                month_items["TOTAL_UNITS_MONTH"] / month_items["_ACTIVE_DAYS"],
                 0
             ).round(3)
 
-            # Remove DAYS from final display (you asked to remove it)
-            month_items_display = month_items.drop(columns=["ACTIVE_DAYS_MONTH"])
+            # Remove DAYS from display
+            month_items = month_items.drop(columns=["_ACTIVE_DAYS"])
+
+            # Apply month search filter (optional)
+            s = (month_search or "").strip().lower()
+            if len(s) >= 3:
+                month_items = month_items[month_items["DESCRIPTION"].str.lower().str.contains(s, na=False)].copy()
 
             # Sort
-            month_items_display = month_items_display.sort_values(
-                month_rank_by,
-                ascending=False
-            )
+            month_items = month_items.sort_values(month_rank_by, ascending=False)
 
             label = f"{month_names.get(my_month, my_month)} {my_year}"
-            st.markdown(f"### Top items for **{label}**")
-
-            st.dataframe(month_items_display.head(int(month_top_n)), use_container_width=True, height=420)
-
-            # Highlight #1
-            best = month_items_display.iloc[0]
-            if month_rank_by == "TOTAL_UNITS_MONTH":
-                st.success(
-                    f"🏆 Top-selling item in **{label}** by **Units**: "
-                    f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Units: {int(best['TOTAL_UNITS_MONTH'])}"
-                )
+            if month_search and len(month_search.strip()) >= 3:
+                st.markdown(f"### Results for **{label}** (filtered by: **{month_search.strip()}**)")
             else:
-                st.success(
-                    f"🏆 Top item in **{label}** by **Profit**: "
-                    f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Profit: {best['TOTAL_PROFIT_MONTH']:.2f}"
-                )
+                st.markdown(f"### Top items for **{label}**")
+
+            st.dataframe(month_items.head(int(month_top_n)), use_container_width=True, height=420)
+
+            if not month_items.empty:
+                best = month_items.iloc[0]
+                if month_rank_by == "TOTAL_UNITS_MONTH":
+                    st.success(
+                        f"🏆 Top item in **{label}** by **Units**: "
+                        f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Units: {int(best['TOTAL_UNITS_MONTH'])}"
+                    )
+                else:
+                    st.success(
+                        f"🏆 Top item in **{label}** by **Profit**: "
+                        f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Profit: {best['TOTAL_PROFIT_MONTH']:.2f}"
+                    )
+            else:
+                st.info("No items match your month search filter.")
 
             st.download_button(
                 "⬇️ Download Month/Year Performance (Excel)",
-                data=df_to_excel_bytes(month_items_display, sheet_name="month_performance"),
+                data=df_to_excel_bytes(month_items, sheet_name="month_performance"),
                 file_name=f"month_performance_{my_year}_{my_month:02d}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
