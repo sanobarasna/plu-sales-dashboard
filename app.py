@@ -1,22 +1,12 @@
 # ==========================================================
 # PLU Sales + Supplier Profitability Dashboard (CLEAN DF)
-# + Space Occupiers Export (with Latest Stock)
-# + NEW: Month/Year filter to view month-wise sales performance
-#        and identify top-selling items for a selected month/year
-# ==========================================================
-# Added in this version:
-# - Sidebar "📆 Month/Year Performance" controls:
-#     * Pick Year + Month
-#     * See Top items sold in that Month/Year (by units)
-#     * Optional: Also show Top items by PROFIT for that Month/Year
-#     * Monthly trend for selected item remains in Item Profile section
-#
-# Notes:
-# - header=4 (Excel row 5 is header)
-# - DATE is first column by position even if header cell is weird
-# - PLU column header may be "1" -> mapped to PLU_CODE
-# - GROUP contains tags: [CATEGORY][SUP1][SUP2]...
-# - USAGE is units sold; STOCK is remaining stock
+# + Space Occupiers (Low-selling items) Export
+# + Stock on hand for Space Occupiers (latest stock)
+# + Month-wise performance (REFactored):
+#     - TOTAL_UNITS_MONTH
+#     - TOTAL_PROFIT_MONTH
+#     - TOTAL_UNITS_PER_DAY (avg per active day)
+#     - (REMOVED: DAYS column from month-wise section)
 # ==========================================================
 
 import re
@@ -265,36 +255,6 @@ else:
     dff = df.copy()
 
 # ==========================================================
-# NEW: MONTH/YEAR PERFORMANCE FILTER (independent view)
-# ==========================================================
-st.sidebar.header("📆 Month/Year Performance")
-
-available_years = sorted(df["YEAR"].dropna().unique().tolist())
-month_names = [
-    (1, "Jan"), (2, "Feb"), (3, "Mar"), (4, "Apr"), (5, "May"), (6, "Jun"),
-    (7, "Jul"), (8, "Aug"), (9, "Sep"), (10, "Oct"), (11, "Nov"), (12, "Dec")
-]
-
-if available_years:
-    my_year = st.sidebar.selectbox("Year", available_years, index=len(available_years) - 1)
-    # months available in that year
-    months_in_year = sorted(df[df["YEAR"] == my_year]["MONTH"].dropna().unique().tolist())
-    month_options = [(m, dict(month_names).get(m, str(m))) for m in months_in_year] if months_in_year else month_names
-    my_month = st.sidebar.selectbox(
-        "Month",
-        [m for m, _ in month_options],
-        format_func=lambda m: dict(month_names).get(m, str(m)),
-        index=len(month_options) - 1 if month_options else 0
-    )
-else:
-    my_year, my_month = None, None
-
-# Monthly filtered df is based on FULL data (df), not the 7/30/60/90 filter.
-month_df = pd.DataFrame()
-if my_year is not None and my_month is not None:
-    month_df = df[(df["YEAR"] == my_year) & (df["MONTH"] == my_month)].copy()
-
-# ==========================================================
 # SECTION 0: SPACE OCCUPIERS (LOW-SELLERS) + EXCEL EXPORT
 # ==========================================================
 st.subheader("🧱 Space Occupiers (Low-selling / barely-moving items)")
@@ -424,71 +384,6 @@ st.download_button(
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
 
-st.caption(
-    "LATEST_STOCK is the last known stock value in your dataset for that item (forward-filled within item). "
-    "If STOCK is missing in the report, LATEST_STOCK will be blank."
-)
-
-# ==========================================================
-# NEW SECTION: MONTH/YEAR TOP ITEMS (Units + Profit)
-# ==========================================================
-st.subheader("📆 Month-wise Sales Performance (Pick Month + Year)")
-
-if my_year is None or my_month is None or month_df.empty:
-    st.info("Select a Year and Month from the sidebar (📆 Month/Year Performance) to view month-wise results.")
-else:
-    left, right = st.columns([2, 1])
-    with right:
-        month_top_n = st.number_input("Top N items (Month/Year)", min_value=10, max_value=500, value=50, step=10)
-        month_rank_by = st.selectbox("Rank by", ["Units Sold", "Profit"], index=0)
-
-    month_items = (
-        month_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)
-                .agg(
-                    TOTAL_UNITS=(units_col, "sum"),
-                    TOTAL_PROFIT=("PROFIT", "sum"),
-                    TOTAL_SALES=("TOTAL_SALES", "sum"),
-                    DAYS=("DATE", "nunique"),
-                )
-                .reset_index()
-    )
-    month_items["PROFIT_PER_UNIT"] = np.where(
-        month_items["TOTAL_UNITS"] > 0,
-        month_items["TOTAL_PROFIT"] / month_items["TOTAL_UNITS"],
-        0
-    )
-
-    if month_rank_by == "Units Sold":
-        month_items = month_items.sort_values(["TOTAL_UNITS", "TOTAL_PROFIT"], ascending=[False, False])
-    else:
-        month_items = month_items.sort_values(["TOTAL_PROFIT", "TOTAL_UNITS"], ascending=[False, False])
-
-    with left:
-        month_label = dict([(k, v) for k, v in month_names]).get(my_month, str(my_month))
-        st.markdown(f"### Top items for **{month_label} {my_year}**")
-        st.dataframe(month_items.head(int(month_top_n)), use_container_width=True, height=420)
-
-    # Quick highlight: #1 item
-    if not month_items.empty:
-        best = month_items.iloc[0]
-        if month_rank_by == "Units Sold":
-            st.success(
-                f"🏆 Top-selling item in **{month_label} {my_year}** by **Units**: "
-                f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Units: {int(best['TOTAL_UNITS'])}"
-            )
-        else:
-            st.success(
-                f"🏆 Top item in **{month_label} {my_year}** by **Profit**: "
-                f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Profit: {best['TOTAL_PROFIT']:.2f}"
-            )
-
-    st.download_button(
-        "⬇️ Download Month/Year Top Items (Excel)",
-        data=df_to_excel_bytes(month_items, sheet_name="month_top_items"),
-        file_name=f"top_items_{my_year}_{my_month:02d}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
 # ==========================================================
 # SECTION 1: TOP SOLD ITEMS (TOTALS) in selected date_window
 # ==========================================================
@@ -505,25 +400,91 @@ top_n = st.number_input("Show Top N items (date range)", min_value=10, max_value
 st.dataframe(top_items.head(int(top_n)), use_container_width=True, height=320)
 
 # ==========================================================
-# SECTION 2: MONTH/YEAR TOTALS FOR ALL ITEMS (within date_window)
+# REFACTORED: MONTH/YEAR TOP ITEMS (Units + Profit + Units/Day)
 # ==========================================================
-with st.expander("📅 Monthly totals view (All items within selected date range)"):
-    years = sorted(dff["YEAR"].unique().tolist())
-    if years:
-        y = st.selectbox("Year (date range)", years, index=len(years) - 1)
-        months = sorted(dff[dff["YEAR"] == y]["MONTH"].unique().tolist())
-        m = st.selectbox("Month (date range)", months, index=len(months) - 1) if months else 1
+st.subheader("📆 Month-wise Sales Performance (Pick Month + Year)")
 
-        month_df2 = dff[(dff["YEAR"] == y) & (dff["MONTH"] == m)]
-        month_totals = (
-            month_df2.groupby(["PLU_CODE", "DESCRIPTION"])[units_col]
-                     .sum()
-                     .reset_index(name="TOTAL_UNITS_MONTH")
-                     .sort_values("TOTAL_UNITS_MONTH", ascending=False)
-        )
-        st.dataframe(month_totals.head(100), use_container_width=True, height=350)
+with st.expander("Open Month/Year filter (independent from 7/30/60/90 filter)", expanded=True):
+    available_years = sorted(df["YEAR"].dropna().unique().tolist())
+    month_names = {
+        1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
+        7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
+    }
+
+    if not available_years:
+        st.info("No YEAR values found in the data.")
     else:
-        st.info("No dates available after filtering.")
+        col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
+        with col1:
+            my_year = st.selectbox("Year", available_years, index=len(available_years) - 1)
+        with col2:
+            months_in_year = sorted(df[df["YEAR"] == my_year]["MONTH"].dropna().unique().tolist())
+            my_month = st.selectbox(
+                "Month",
+                months_in_year if months_in_year else list(month_names.keys()),
+                format_func=lambda m: month_names.get(m, str(m)),
+                index=(len(months_in_year) - 1) if months_in_year else 0
+            )
+        with col3:
+            month_top_n = st.number_input("Top N", min_value=10, max_value=500, value=50, step=10)
+        with col4:
+            month_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS_MONTH", "TOTAL_PROFIT_MONTH"], index=0)
+
+        month_df = df[(df["YEAR"] == my_year) & (df["MONTH"] == my_month)].copy()
+
+        if month_df.empty:
+            st.warning("No rows found for that month/year.")
+        else:
+            # Aggregate month totals per item
+            month_items = (
+                month_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)
+                        .agg(
+                            TOTAL_UNITS_MONTH=(units_col, "sum"),
+                            TOTAL_PROFIT_MONTH=("PROFIT", "sum"),
+                            ACTIVE_DAYS_MONTH=("DATE", "nunique"),  # internal helper only
+                        )
+                        .reset_index()
+            )
+            # Total units per active day (your requested metric)
+            month_items["TOTAL_UNITS_PER_DAY"] = np.where(
+                month_items["ACTIVE_DAYS_MONTH"] > 0,
+                month_items["TOTAL_UNITS_MONTH"] / month_items["ACTIVE_DAYS_MONTH"],
+                0
+            ).round(3)
+
+            # Remove DAYS from final display (you asked to remove it)
+            month_items_display = month_items.drop(columns=["ACTIVE_DAYS_MONTH"])
+
+            # Sort
+            month_items_display = month_items_display.sort_values(
+                month_rank_by,
+                ascending=False
+            )
+
+            label = f"{month_names.get(my_month, my_month)} {my_year}"
+            st.markdown(f"### Top items for **{label}**")
+
+            st.dataframe(month_items_display.head(int(month_top_n)), use_container_width=True, height=420)
+
+            # Highlight #1
+            best = month_items_display.iloc[0]
+            if month_rank_by == "TOTAL_UNITS_MONTH":
+                st.success(
+                    f"🏆 Top-selling item in **{label}** by **Units**: "
+                    f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Units: {int(best['TOTAL_UNITS_MONTH'])}"
+                )
+            else:
+                st.success(
+                    f"🏆 Top item in **{label}** by **Profit**: "
+                    f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Profit: {best['TOTAL_PROFIT_MONTH']:.2f}"
+                )
+
+            st.download_button(
+                "⬇️ Download Month/Year Performance (Excel)",
+                data=df_to_excel_bytes(month_items_display, sheet_name="month_performance"),
+                file_name=f"month_performance_{my_year}_{my_month:02d}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
 
 # ==========================================================
 # SECTION 3: ITEM SEARCH + ITEM PROFILE (profitability ranking)
