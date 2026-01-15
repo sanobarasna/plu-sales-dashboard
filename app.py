@@ -1,12 +1,11 @@
 # ==========================================================
 # PLU Sales + Supplier Profitability Dashboard (CLEAN DF)
-# + Space Occupiers (Low-selling items) Export
-# + Stock on hand for Space Occupiers (latest stock)
-# + Month-wise performance (Refactored):
-#     - TOTAL_UNITS_MONTH
-#     - TOTAL_PROFIT_MONTH
-#     - TOTAL_UNITS_PER_DAY (avg per active day)
-#     - NEW: Item name search filter inside Month-wise section
+# + Space Occupiers (Low-selling items) Export (latest stock)
+# + Custom Time Range Performance
+# + Consolidated Top Items (Custom Time Range + Optional Supplier Filter)
+#     - NEW: Toggle "Breakdown by supplier" for each item
+#         * OFF  -> aggregated across suppliers (one row per item)
+#         * ON   -> item x supplier rows (shows profitability + units per supplier)
 # ==========================================================
 
 import re
@@ -143,7 +142,7 @@ def df_to_excel_bytes(df: pd.DataFrame, sheet_name: str = "data") -> bytes:
 def latest_stock_per_item(df_full: pd.DataFrame) -> pd.DataFrame:
     """
     Returns latest known stock per item (PLU_CODE, DESCRIPTION) based on DATE.
-    Uses the last non-null STOCK value in time order.
+    Uses the last non-null STOCK value in time order (forward-filled within item).
     """
     tmp = df_full.sort_values(["PLU_CODE", "DESCRIPTION", "DATE"]).copy()
     tmp["STOCK_FFILL"] = tmp.groupby(["PLU_CODE", "DESCRIPTION"])["STOCK"].ffill()
@@ -153,6 +152,13 @@ def latest_stock_per_item(df_full: pd.DataFrame) -> pd.DataFrame:
            .rename(columns={"STOCK_FFILL": "LATEST_STOCK", "DATE": "STOCK_ASOF_DATE"})
     )
     return out
+
+def clamp_date_range(start_date, end_date):
+    if start_date is None or end_date is None:
+        return None, None
+    if start_date > end_date:
+        return end_date, start_date
+    return start_date, end_date
 
 # -----------------------
 # CLEAN LOADER
@@ -210,11 +216,6 @@ def load_plu_report_clean(file, sheet_name=None) -> pd.DataFrame:
     # Resolve supplier
     clean = resolve_supplier_from_group(clean)
 
-    # Time fields
-    clean["YEAR"] = clean["DATE"].dt.year
-    clean["MONTH"] = clean["DATE"].dt.month
-    clean["YEAR_MONTH"] = clean["DATE"].dt.to_period("M").astype(str)
-
     return clean.sort_values(["DATE", "PLU_CODE"]).reset_index(drop=True)
 
 # -----------------------
@@ -237,16 +238,18 @@ except Exception as e:
 # -----------------------
 st.sidebar.header("🎛️ Global Filters")
 
+use_net_units = st.sidebar.checkbox("Use NET units (include negatives)", value=False)
+units_col = "USAGE_NET" if use_net_units else "USAGE_SOLD"
+
 date_window = st.sidebar.selectbox(
-    "Date range (applies to most sections)",
+    "Quick date range (applies to Space Occupiers + Item Profile charts)",
     ["All", "Last 7 days", "Last 30 days", "Last 60 days", "Last 90 days"],
     index=1
 )
 
-use_net_units = st.sidebar.checkbox("Use NET units (include negatives)", value=False)
-units_col = "USAGE_NET" if use_net_units else "USAGE_SOLD"
-
 max_date = df["DATE"].max()
+min_date = df["DATE"].min()
+
 if date_window != "All":
     days = int(date_window.split()[1])
     start = max_date - pd.Timedelta(days=days - 1)
@@ -258,7 +261,6 @@ else:
 # SECTION 0: SPACE OCCUPIERS (LOW-SELLERS) + EXCEL EXPORT
 # ==========================================================
 st.subheader("🧱 Space Occupiers (Low-selling / barely-moving items)")
-
 st.caption(
     "Find items that sold very little in a recent lookback window. "
     "Includes LATEST STOCK (what you have left on hand)."
@@ -330,6 +332,7 @@ space = (
 
 space["DAYS_SINCE_LAST_SOLD_EVER"] = (end_dt - space["LAST_SOLD_DATE_EVER"]).dt.days
 
+# LOSS_% calculation (profit-based)
 space["LOSS_%"] = np.nan
 sales_ok = space["TOTAL_SALES_LOOKBACK"].fillna(0) > 0
 neg_profit = space["TOTAL_PROFIT_LOOKBACK"] < 0
@@ -345,12 +348,14 @@ space.loc[fallback_mask, "LOSS_%"] = (
      / (space.loc[fallback_mask, "TOTAL_PROFIT_LOOKBACK"].abs() + 1)) * 100
 ).round(2)
 
+# Filter: low units + optional stale + optional stock constraint
 space_filtered = space[space["TOTAL_UNITS_LOOKBACK"] <= max_units_threshold].copy()
 if stale_days > 0:
     space_filtered = space_filtered[space_filtered["DAYS_SINCE_LAST_SOLD_EVER"] >= stale_days].copy()
 if stock_min > 0:
     space_filtered = space_filtered[space_filtered["LATEST_STOCK"].fillna(0) >= stock_min].copy()
 
+# Sort: least sold, most stale, highest stock, then highest loss%
 space_filtered = space_filtered.sort_values(
     ["TOTAL_UNITS_LOOKBACK", "DAYS_SINCE_LAST_SOLD_EVER", "LATEST_STOCK", "LOSS_%"],
     ascending=[True, False, False, False]
@@ -383,132 +388,233 @@ st.download_button(
 )
 
 # ==========================================================
-# SECTION 1: TOP SOLD ITEMS (TOTALS) in selected date_window
+# SECTION 1: CUSTOM TIME RANGE PERFORMANCE
 # ==========================================================
-st.subheader("🏆 Top Sold Items (Total Units in selected date range)")
+st.subheader("📅 Sales Performance (Custom Time Range)")
+st.caption("Pick any start and end date (e.g., Jan 22 → Mar 22). Optional: search item name. Ranked by units or profit.")
 
-top_items = (
+with st.expander("Open Custom Time Range Filter", expanded=True):
+    c1, c2, c3 = st.columns([1.2, 1.2, 1.6])
+    with c1:
+        range_start = st.date_input(
+            "Start date",
+            value=min_date.date(),
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+            key="range_start",
+        )
+    with c2:
+        range_end = st.date_input(
+            "End date",
+            value=max_date.date(),
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+            key="range_end",
+        )
+    with c3:
+        range_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS", "TOTAL_PROFIT"], index=0, key="range_rank")
+
+    rstart, rend = clamp_date_range(pd.Timestamp(range_start), pd.Timestamp(range_end))
+    range_top_n = st.number_input("Top N items (range)", min_value=10, max_value=2000, value=100, step=10, key="range_topn")
+    range_search = st.text_input("Search item name (optional, min 3 letters)", value="", key="range_search")
+
+    range_df = df[(df["DATE"] >= rstart) & (df["DATE"] <= rend)].copy()
+
+    if range_df.empty:
+        st.warning("No rows found in that selected date range.")
+    else:
+        items_range = (
+            range_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)
+                    .agg(
+                        TOTAL_UNITS=(units_col, "sum"),
+                        TOTAL_PROFIT=("PROFIT", "sum"),
+                        _ACTIVE_DAYS=("DATE", "nunique"),
+                    )
+                    .reset_index()
+        )
+        items_range["TOTAL_UNITS_PER_DAY"] = np.where(
+            items_range["_ACTIVE_DAYS"] > 0,
+            items_range["TOTAL_UNITS"] / items_range["_ACTIVE_DAYS"],
+            0
+        ).round(3)
+        items_range = items_range.drop(columns=["_ACTIVE_DAYS"])
+
+        s = (range_search or "").strip().lower()
+        if len(s) >= 3:
+            items_range = items_range[items_range["DESCRIPTION"].str.lower().str.contains(s, na=False)].copy()
+
+        sort_col = "TOTAL_UNITS" if range_rank_by == "TOTAL_UNITS" else "TOTAL_PROFIT"
+        items_range = items_range.sort_values(sort_col, ascending=False)
+
+        st.write(f"Selected range: **{rstart.date()} → {rend.date()}** | Items in result: **{len(items_range)}**")
+        st.dataframe(items_range.head(int(range_top_n)), use_container_width=True, height=420)
+
+        if not items_range.empty:
+            top = items_range.iloc[0]
+            if sort_col == "TOTAL_UNITS":
+                st.success(
+                    f"🏆 Top item by **Units** in selected range: "
+                    f"**{top['DESCRIPTION']}** (PLU {int(top['PLU_CODE'])}) — Units: {int(top['TOTAL_UNITS'])}"
+                )
+            else:
+                st.success(
+                    f"🏆 Top item by **Profit** in selected range: "
+                    f"**{top['DESCRIPTION']}** (PLU {int(top['PLU_CODE'])}) — Profit: {top['TOTAL_PROFIT']:.2f}"
+                )
+
+        st.download_button(
+            "⬇️ Download Custom Range Performance (Excel)",
+            data=df_to_excel_bytes(items_range, sheet_name="range_performance"),
+            file_name=f"range_performance_{rstart.date()}_to_{rend.date()}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+# ==========================================================
+# SECTION 2: TOP ITEMS (Custom Time Range + Optional Supplier + Supplier Breakdown Toggle)
+# ==========================================================
+st.subheader("🏆 Top Items (Custom Time Range + Optional Supplier Filter)")
+st.caption(
+    "Pick a custom time range, optionally filter to a supplier, optionally search item name.\n"
+    "NEW: Toggle supplier breakdown to see per-supplier results for each item."
+)
+
+with st.expander("Open Top Items Filter", expanded=True):
+    t1, t2, t3, t4 = st.columns([1.2, 1.2, 1.2, 1.4])
+    with t1:
+        top_start = st.date_input(
+            "Start",
+            value=(max_date - pd.Timedelta(days=30)).date(),
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+            key="top_start"
+        )
+    with t2:
+        top_end = st.date_input(
+            "End",
+            value=max_date.date(),
+            min_value=min_date.date(),
+            max_value=max_date.date(),
+            key="top_end"
+        )
+    with t3:
+        top_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS", "TOTAL_PROFIT"], index=0, key="top_rank")
+    with t4:
+        suppliers_all = ["All Suppliers"] + sorted(df["SUPPLIER_RESOLVED"].dropna().unique().tolist())
+        supplier_filter = st.selectbox("Supplier", suppliers_all, index=0, key="top_supplier")
+
+    top_search = st.text_input("Search item name (optional, min 3 letters)", value="", key="top_search")
+    top_n = st.number_input("Top N rows", min_value=10, max_value=5000, value=100, step=10, key="top_n")
+    breakdown = st.toggle("Breakdown by supplier (show per-supplier rows)", value=False)
+
+    ts, te = clamp_date_range(pd.Timestamp(top_start), pd.Timestamp(top_end))
+    top_df = df[(df["DATE"] >= ts) & (df["DATE"] <= te)].copy()
+
+    if supplier_filter != "All Suppliers":
+        top_df = top_df[top_df["SUPPLIER_RESOLVED"] == supplier_filter].copy()
+
+    s = (top_search or "").strip().lower()
+    if len(s) >= 3:
+        top_df = top_df[top_df["DESCRIPTION"].str.lower().str.contains(s, na=False)].copy()
+
+    if top_df.empty:
+        st.warning("No rows found for that filter (date range / supplier / search).")
+    else:
+        sort_col = "TOTAL_UNITS" if top_rank_by == "TOTAL_UNITS" else "TOTAL_PROFIT"
+
+        if not breakdown:
+            # One row per item (aggregated across suppliers)
+            top_items_df = (
+                top_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)
+                      .agg(
+                          TOTAL_UNITS=(units_col, "sum"),
+                          TOTAL_PROFIT=("PROFIT", "sum"),
+                          _ACTIVE_DAYS=("DATE", "nunique"),
+                      )
+                      .reset_index()
+            )
+            top_items_df["TOTAL_UNITS_PER_DAY"] = np.where(
+                top_items_df["_ACTIVE_DAYS"] > 0,
+                top_items_df["TOTAL_UNITS"] / top_items_df["_ACTIVE_DAYS"],
+                0
+            ).round(3)
+            top_items_df = top_items_df.drop(columns=["_ACTIVE_DAYS"])
+            top_items_df = top_items_df.sort_values(sort_col, ascending=False)
+
+            st.write(f"Filter: **{ts.date()} → {te.date()}** | Supplier: **{supplier_filter}** | Rows: **{len(top_items_df)}**")
+            st.dataframe(top_items_df.head(int(top_n)), use_container_width=True, height=420)
+
+            st.download_button(
+                "⬇️ Download Top Items (Item totals) (Excel)",
+                data=df_to_excel_bytes(top_items_df, sheet_name="top_items"),
+                file_name=f"top_items_{ts.date()}_to_{te.date()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+        else:
+            # Per item x supplier breakdown
+            top_items_sup = (
+                top_df.groupby(["PLU_CODE", "DESCRIPTION", "SUPPLIER_RESOLVED"], dropna=False)
+                      .agg(
+                          TOTAL_UNITS=(units_col, "sum"),
+                          TOTAL_PROFIT=("PROFIT", "sum"),
+                          TOTAL_SALES=("TOTAL_SALES", "sum"),
+                          _ACTIVE_DAYS=("DATE", "nunique"),
+                      )
+                      .reset_index()
+            )
+            top_items_sup["TOTAL_UNITS_PER_DAY"] = np.where(
+                top_items_sup["_ACTIVE_DAYS"] > 0,
+                top_items_sup["TOTAL_UNITS"] / top_items_sup["_ACTIVE_DAYS"],
+                0
+            ).round(3)
+            top_items_sup["PROFIT_PER_UNIT"] = np.where(
+                top_items_sup["TOTAL_UNITS"] > 0,
+                top_items_sup["TOTAL_PROFIT"] / top_items_sup["TOTAL_UNITS"],
+                0
+            ).round(4)
+            top_items_sup = top_items_sup.drop(columns=["_ACTIVE_DAYS"])
+
+            # Sort by chosen metric primarily, then units
+            top_items_sup = top_items_sup.sort_values(
+                [sort_col, "TOTAL_UNITS"],
+                ascending=[False, False]
+            )
+
+            st.write(
+                f"Filter: **{ts.date()} → {te.date()}** | Supplier: **{supplier_filter}** "
+                f"| Breakdown rows: **{len(top_items_sup)}**"
+            )
+            st.dataframe(top_items_sup.head(int(top_n)), use_container_width=True, height=420)
+
+            st.download_button(
+                "⬇️ Download Top Items (Supplier breakdown) (Excel)",
+                data=df_to_excel_bytes(top_items_sup, sheet_name="top_items_supplier"),
+                file_name=f"top_items_supplier_breakdown_{ts.date()}_to_{te.date()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+
+# ==========================================================
+# SECTION 3: ITEM SEARCH + ITEM PROFILE (profitability ranking)
+# (still uses quick date_window dff for charts)
+# ==========================================================
+st.sidebar.header("🔎 Item Search (Profile)")
+query = st.sidebar.text_input("Type item name (min 5 letters)", value="")
+
+top_items_for_search = (
     dff.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)[units_col]
        .sum()
        .reset_index(name="TOTAL_UNITS")
        .sort_values("TOTAL_UNITS", ascending=False)
 )
 
-top_n = st.number_input("Show Top N items (date range)", min_value=10, max_value=500, value=50, step=10)
-st.dataframe(top_items.head(int(top_n)), use_container_width=True, height=320)
-
-# ==========================================================
-# MONTH/YEAR TOP ITEMS (Units + Profit + Units/Day)
-# + NEW: Item name search inside this filter
-# ==========================================================
-st.subheader("📆 Month-wise Sales Performance (Pick Month + Year)")
-
-with st.expander("Open Month/Year filter (independent from 7/30/60/90 filter)", expanded=True):
-    available_years = sorted(df["YEAR"].dropna().unique().tolist())
-    month_names = {
-        1: "Jan", 2: "Feb", 3: "Mar", 4: "Apr", 5: "May", 6: "Jun",
-        7: "Jul", 8: "Aug", 9: "Sep", 10: "Oct", 11: "Nov", 12: "Dec"
-    }
-
-    if not available_years:
-        st.info("No YEAR values found in the data.")
-    else:
-        col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
-        with col1:
-            my_year = st.selectbox("Year", available_years, index=len(available_years) - 1, key="mw_year")
-        with col2:
-            months_in_year = sorted(df[df["YEAR"] == my_year]["MONTH"].dropna().unique().tolist())
-            my_month = st.selectbox(
-                "Month",
-                months_in_year if months_in_year else list(month_names.keys()),
-                format_func=lambda m: month_names.get(m, str(m)),
-                index=(len(months_in_year) - 1) if months_in_year else 0,
-                key="mw_month"
-            )
-        with col3:
-            month_top_n = st.number_input("Top N", min_value=10, max_value=500, value=50, step=10, key="mw_topn")
-        with col4:
-            month_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS_MONTH", "TOTAL_PROFIT_MONTH"], index=0, key="mw_rank")
-
-        # NEW: item name search inside month-wise
-        month_search = st.text_input("Search item name in this month (optional, min 3 letters)", value="", key="mw_search")
-
-        month_df = df[(df["YEAR"] == my_year) & (df["MONTH"] == my_month)].copy()
-
-        if month_df.empty:
-            st.warning("No rows found for that month/year.")
-        else:
-            month_items = (
-                month_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False)
-                        .agg(
-                            TOTAL_UNITS_MONTH=(units_col, "sum"),
-                            TOTAL_PROFIT_MONTH=("PROFIT", "sum"),
-                            _ACTIVE_DAYS=("DATE", "nunique"),  # internal only
-                        )
-                        .reset_index()
-            )
-
-            month_items["TOTAL_UNITS_PER_DAY"] = np.where(
-                month_items["_ACTIVE_DAYS"] > 0,
-                month_items["TOTAL_UNITS_MONTH"] / month_items["_ACTIVE_DAYS"],
-                0
-            ).round(3)
-
-            # Remove DAYS from display
-            month_items = month_items.drop(columns=["_ACTIVE_DAYS"])
-
-            # Apply month search filter (optional)
-            s = (month_search or "").strip().lower()
-            if len(s) >= 3:
-                month_items = month_items[month_items["DESCRIPTION"].str.lower().str.contains(s, na=False)].copy()
-
-            # Sort
-            month_items = month_items.sort_values(month_rank_by, ascending=False)
-
-            label = f"{month_names.get(my_month, my_month)} {my_year}"
-            if month_search and len(month_search.strip()) >= 3:
-                st.markdown(f"### Results for **{label}** (filtered by: **{month_search.strip()}**)")
-            else:
-                st.markdown(f"### Top items for **{label}**")
-
-            st.dataframe(month_items.head(int(month_top_n)), use_container_width=True, height=420)
-
-            if not month_items.empty:
-                best = month_items.iloc[0]
-                if month_rank_by == "TOTAL_UNITS_MONTH":
-                    st.success(
-                        f"🏆 Top item in **{label}** by **Units**: "
-                        f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Units: {int(best['TOTAL_UNITS_MONTH'])}"
-                    )
-                else:
-                    st.success(
-                        f"🏆 Top item in **{label}** by **Profit**: "
-                        f"**{best['DESCRIPTION']}** (PLU {int(best['PLU_CODE'])}) — Profit: {best['TOTAL_PROFIT_MONTH']:.2f}"
-                    )
-            else:
-                st.info("No items match your month search filter.")
-
-            st.download_button(
-                "⬇️ Download Month/Year Performance (Excel)",
-                data=df_to_excel_bytes(month_items, sheet_name="month_performance"),
-                file_name=f"month_performance_{my_year}_{my_month:02d}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-
-# ==========================================================
-# SECTION 3: ITEM SEARCH + ITEM PROFILE (profitability ranking)
-# ==========================================================
-st.sidebar.header("🔎 Item Search")
-query = st.sidebar.text_input("Type item name (min 5 letters)", value="")
-
 selected_item = None
 if query and len(query.strip()) >= 5:
     q = query.strip().lower()
-    matches = top_items[top_items["DESCRIPTION"].str.lower().str.contains(q, na=False)].copy()
+    matches = top_items_for_search[top_items_for_search["DESCRIPTION"].str.lower().str.contains(q, na=False)].copy()
     matches = matches.sort_values("TOTAL_UNITS", ascending=False).head(80)
 
     if matches.empty:
-        st.warning("No matching items found (within your selected date range).")
+        st.warning("No matching items found (within the quick date range filter).")
     else:
         options = [
             f'{r["DESCRIPTION"]} | PLU: {r["PLU_CODE"]} | Units: {int(r["TOTAL_UNITS"])}'
@@ -533,7 +639,7 @@ if selected_item:
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total Units", f"{int(total_units)}")
-    c2.metric("Days Present", f"{days_present}")
+    c2.metric("Active Days (unique dates)", f"{days_present}")
     c3.metric("Avg Units / Day", f"{avg_units_per_day:.2f}")
     c4.metric("Total Profit (sum)", f"{total_profit:.2f}")
 
@@ -544,7 +650,7 @@ if selected_item:
                   TOTAL_UNITS=(units_col, "sum"),
                   TOTAL_PROFIT=("PROFIT", "sum"),
                   TOTAL_SALES=("TOTAL_SALES", "sum"),
-                  DAYS=("DATE", "nunique"),
+                  ACTIVE_DAYS=("DATE", "nunique"),
               )
               .reset_index()
     )
@@ -554,13 +660,15 @@ if selected_item:
         0
     )
     sup_profit = sup_profit.sort_values(["TOTAL_PROFIT", "TOTAL_UNITS"], ascending=[False, False])
-
     st.dataframe(sup_profit, use_container_width=True, height=280)
 
     best_supplier = sup_profit.iloc[0]["SUPPLIER_RESOLVED"] if not sup_profit.empty else "UNKNOWN"
-    st.success(f"🏅 Most profitable supplier for this item (in current date range): **{best_supplier}**")
+    st.success(f"🏅 Most profitable supplier for this item (in quick date range): **{best_supplier}**")
 
     st.markdown("### 📈 Item performance over time")
+
+    item_df = item_df.copy()
+    item_df["YEAR_MONTH"] = item_df["DATE"].dt.to_period("M").astype(str)
 
     monthly = (
         item_df.groupby("YEAR_MONTH")
@@ -605,39 +713,7 @@ if selected_item:
         st.dataframe(item_df[show_cols_item].sort_values("DATE"), use_container_width=True, height=380)
 
 # ==========================================================
-# SECTION 4: TOP ITEMS BY SUPPLIER (UNITS + PROFIT)
-# ==========================================================
-st.subheader("🏷️ Top Items by Supplier (Units + Profit in selected date range)")
-
-suppliers = sorted(dff["SUPPLIER_RESOLVED"].dropna().unique().tolist())
-if not suppliers:
-    st.warning("No suppliers found after parsing.")
-else:
-    supplier_pick = st.selectbox("Select supplier", suppliers)
-    supplier_df = dff[dff["SUPPLIER_RESOLVED"] == supplier_pick].copy()
-
-    top_by_supplier = (
-        supplier_df.groupby(["PLU_CODE", "DESCRIPTION"])
-                  .agg(
-                      TOTAL_UNITS=(units_col, "sum"),
-                      TOTAL_PROFIT=("PROFIT", "sum"),
-                      TOTAL_SALES=("TOTAL_SALES", "sum"),
-                      DAYS=("DATE", "nunique")
-                  )
-                  .reset_index()
-                  .sort_values(["TOTAL_UNITS", "TOTAL_PROFIT"], ascending=[False, False])
-    )
-    top_by_supplier["PROFIT_PER_UNIT"] = np.where(
-        top_by_supplier["TOTAL_UNITS"] > 0,
-        top_by_supplier["TOTAL_PROFIT"] / top_by_supplier["TOTAL_UNITS"],
-        0
-    )
-
-    top_k = st.number_input("Show Top K items for selected supplier", min_value=10, max_value=300, value=30, step=10)
-    st.dataframe(top_by_supplier.head(int(top_k)), use_container_width=True, height=380)
-
-# ==========================================================
-# SECTION 5: FAST / SLOW MOVERS (UNITS)
+# SECTION 4: FAST / SLOW MOVERS (UNITS) - uses quick date window dff
 # ==========================================================
 st.subheader("🚀 Fast Movers / 🐢 Slow Movers (Units based)")
 
