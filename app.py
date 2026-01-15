@@ -444,7 +444,7 @@ with st.expander("Open Custom Time Range Filter", expanded=True):
             items_range = items_range[items_range["DESCRIPTION"].str.lower().str.contains(s, na=False)].copy()
 
         sort_col = "TOTAL_UNITS" if range_rank_by == "TOTAL_UNITS" else "TOTAL_PROFIT"
-        items_range = items_range.sort_values(sort_col, ascending=False)
+        items_range = items_range.sort_values(sort_col, ascending=False).reset_index(drop=True)
 
         st.write(f"Selected range: **{rstart.date()} → {rend.date()}** | Items in result: **{len(items_range)}**")
         st.dataframe(items_range.head(int(range_top_n)), use_container_width=True, height=420)
