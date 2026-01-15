@@ -359,7 +359,7 @@ if stock_min > 0:
 space_filtered = space_filtered.sort_values(
     ["TOTAL_UNITS_LOOKBACK", "DAYS_SINCE_LAST_SOLD_EVER", "LATEST_STOCK", "LOSS_%"],
     ascending=[True, False, False, False]
-)
+).reset_index(drop=True)
 
 show_cols = [
     "PLU_CODE",
@@ -538,7 +538,7 @@ with st.expander("Open Top Items Filter", expanded=True):
                 0
             ).round(3)
             top_items_df = top_items_df.drop(columns=["_ACTIVE_DAYS"])
-            top_items_df = top_items_df.sort_values(sort_col, ascending=False)
+            top_items_df = top_items_df.sort_values(sort_col, ascending=False).reset_index(drop=True)
 
             st.write(f"Filter: **{ts.date()} → {te.date()}** | Supplier: **{supplier_filter}** | Rows: **{len(top_items_df)}**")
             st.dataframe(top_items_df.head(int(top_n)), use_container_width=True, height=420)
@@ -578,7 +578,7 @@ with st.expander("Open Top Items Filter", expanded=True):
             top_items_sup = top_items_sup.sort_values(
                 [sort_col, "TOTAL_UNITS"],
                 ascending=[False, False]
-            )
+            ).reset_index(drop=True)
 
             st.write(
                 f"Filter: **{ts.date()} → {te.date()}** | Supplier: **{supplier_filter}** "
@@ -659,7 +659,7 @@ if selected_item:
         sup_profit["TOTAL_PROFIT"] / sup_profit["TOTAL_UNITS"],
         0
     )
-    sup_profit = sup_profit.sort_values(["TOTAL_PROFIT", "TOTAL_UNITS"], ascending=[False, False])
+    sup_profit = sup_profit.sort_values(["TOTAL_PROFIT", "TOTAL_UNITS"], ascending=[False, False]).reset_index(drop=True)
     st.dataframe(sup_profit, use_container_width=True, height=280)
 
     best_supplier = sup_profit.iloc[0]["SUPPLIER_RESOLVED"] if not sup_profit.empty else "UNKNOWN"
@@ -745,8 +745,8 @@ movers["PCT_CHANGE"] = movers["PCT_CHANGE"].round(2)
 fast_thresh = st.number_input("Fast mover threshold (% increase)", min_value=5, max_value=1000, value=50, step=5)
 slow_thresh = st.number_input("Slow mover threshold (% decrease)", min_value=5, max_value=1000, value=30, step=5)
 
-fast = movers[movers["PCT_CHANGE"] >= fast_thresh].sort_values(["PCT_CHANGE", "RECENT_UNITS"], ascending=[False, False])
-slow = movers[movers["PCT_CHANGE"] <= -slow_thresh].sort_values(["PCT_CHANGE", "RECENT_UNITS"], ascending=[True, False])
+fast = movers[movers["PCT_CHANGE"] >= fast_thresh].sort_values(["PCT_CHANGE", "RECENT_UNITS"], ascending=[False, False]).reset_index(drop=True)
+slow = movers[movers["PCT_CHANGE"] <= -slow_thresh].sort_values(["PCT_CHANGE", "RECENT_UNITS"], ascending=[True, False]).reset_index(drop=True)
 
 if fast.empty and slow.empty:
     st.warning("No movers matched your settings. Try lowering min units / thresholds or using a shorter window (7/14 days).")
