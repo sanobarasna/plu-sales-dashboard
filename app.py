@@ -1,5 +1,6 @@
 # ==========================================================
 # PLU Sales + Supplier Profitability Dashboard (CLEAN DF)
+# + Quick Item Lookup (search by last 5-7 digits PLU or name)
 # + Space Occupiers (Low-selling items) Export (latest stock)
 # + Consolidated Top Items (Custom Time Range + Category Filter + Supplier Filter)
 #     - Toggle "Breakdown by supplier" for each item
@@ -11,6 +12,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from io import BytesIO
+import plotly.express as px
+import plotly.graph_objects as go
 
 # -----------------------
 # CONFIG
@@ -158,6 +161,32 @@ def clamp_date_range(start_date, end_date):
         return end_date, start_date
     return start_date, end_date
 
+def search_items_by_plu_or_name(df: pd.DataFrame, query: str) -> pd.DataFrame:
+    """
+    Search items by last 5-7 digits of PLU code OR by partial name match.
+    Returns dataframe with matching items.
+    """
+    query = query.strip()
+    if not query:
+        return pd.DataFrame()
+    
+    # Check if query is numeric (PLU search by last digits)
+    if query.isdigit():
+        # Search by last 5-7 digits of PLU
+        query_len = len(query)
+        if query_len >= 5:
+            matches = df[df["PLU_CODE"].astype(str).str.endswith(query)].copy()
+            if not matches.empty:
+                return matches[["PLU_CODE", "DESCRIPTION"]].drop_duplicates()
+    
+    # Search by name (partial match, case insensitive)
+    if len(query) >= 3:
+        matches = df[df["DESCRIPTION"].str.lower().str.contains(query.lower(), na=False)].copy()
+        if not matches.empty:
+            return matches[["PLU_CODE", "DESCRIPTION"]].drop_duplicates()
+    
+    return pd.DataFrame()
+
 # -----------------------
 # CLEAN LOADER
 # -----------------------
@@ -254,6 +283,246 @@ if date_window != "All":
     dff = df[df["DATE"] >= start].copy()
 else:
     dff = df.copy()
+
+# ==========================================================
+# SECTION 0: QUICK ITEM LOOKUP
+# ==========================================================
+st.subheader("🔍 Quick Item Lookup")
+st.caption("Search by last 5-7 digits of PLU code OR by item name (min 3 letters)")
+
+search_query = st.text_input(
+    "Enter PLU (last 5-7 digits) or Item Name:",
+    value="",
+    key="quick_search",
+    placeholder="e.g., 12345 or chicken"
+)
+
+if search_query and len(search_query.strip()) >= 3:
+    search_results = search_items_by_plu_or_name(df, search_query)
+    
+    if search_results.empty:
+        st.warning("No items found matching your search.")
+    else:
+        # If multiple matches, show dropdown
+        if len(search_results) > 1:
+            options = [
+                f"{row['DESCRIPTION']} (PLU: {int(row['PLU_CODE'])})"
+                for _, row in search_results.iterrows()
+            ]
+            selected = st.selectbox("Multiple items found. Select one:", options, key="item_select")
+            selected_idx = options.index(selected)
+            selected_plu = int(search_results.iloc[selected_idx]["PLU_CODE"])
+            selected_desc = search_results.iloc[selected_idx]["DESCRIPTION"]
+        else:
+            selected_plu = int(search_results.iloc[0]["PLU_CODE"])
+            selected_desc = search_results.iloc[0]["DESCRIPTION"]
+            st.success(f"✅ Found: **{selected_desc}** (PLU: {selected_plu})")
+        
+        # Filter data for this item
+        item_data = df[(df["PLU_CODE"] == selected_plu) & (df["DESCRIPTION"] == selected_desc)].copy()
+        
+        if item_data.empty:
+            st.warning("No transaction data found for this item.")
+        else:
+            # Optional: Custom Date Range Toggle
+            use_custom_range = st.toggle("📅 Use custom date range", value=False, key="custom_range_toggle")
+            
+            if use_custom_range:
+                col1, col2 = st.columns(2)
+                with col1:
+                    custom_start = st.date_input(
+                        "Start Date",
+                        value=min_date.date(),
+                        min_value=min_date.date(),
+                        max_value=max_date.date(),
+                        key="lookup_start"
+                    )
+                with col2:
+                    custom_end = st.date_input(
+                        "End Date",
+                        value=max_date.date(),
+                        min_value=min_date.date(),
+                        max_value=max_date.date(),
+                        key="lookup_end"
+                    )
+                
+                cs, ce = clamp_date_range(pd.Timestamp(custom_start), pd.Timestamp(custom_end))
+                item_data = item_data[(item_data["DATE"] >= cs) & (item_data["DATE"] <= ce)].copy()
+                date_range_label = f"{cs.date()} to {ce.date()}"
+            else:
+                date_range_label = "All Time (Since First Sale)"
+            
+            # Get category and stock info
+            category = item_data["CATEGORY"].mode()[0] if not item_data["CATEGORY"].mode().empty else "N/A"
+            stock_info = latest_stock_per_item(df[df["PLU_CODE"] == selected_plu])
+            current_stock = stock_info.iloc[0]["LATEST_STOCK"] if not stock_info.empty else 0
+            stock_date = stock_info.iloc[0]["STOCK_ASOF_DATE"] if not stock_info.empty else None
+            
+            # Calculate metrics
+            total_units = float(item_data[units_col].sum())
+            total_profit = float(item_data["PROFIT"].sum())
+            total_sales = float(item_data["TOTAL_SALES"].sum())
+            first_sale = item_data["DATE"].min()
+            last_sale = item_data["DATE"].max()
+            days_active = int(item_data["DATE"].nunique())
+            avg_units_per_day = total_units / days_active if days_active > 0 else 0
+            
+            # Performance Summary Card
+            st.markdown("---")
+            st.markdown(f"### 📊 Performance Summary: {selected_desc}")
+            st.caption(f"**Date Range:** {date_range_label}")
+            
+            # Key Metrics in columns
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric("PLU Code", f"{selected_plu}")
+            with col2:
+                st.metric("Category", category)
+            with col3:
+                st.metric("Total Units", f"{int(total_units):,}")
+            with col4:
+                st.metric("Total Profit", f"${total_profit:,.2f}")
+            with col5:
+                st.metric("Current Stock", f"{int(current_stock) if not pd.isna(current_stock) else 0}")
+            
+            col6, col7, col8, col9 = st.columns(4)
+            with col6:
+                st.metric("Days Active", f"{days_active}")
+            with col7:
+                st.metric("Avg Units/Day", f"{avg_units_per_day:.2f}")
+            with col8:
+                st.metric("First Sale", first_sale.strftime("%Y-%m-%d"))
+            with col9:
+                st.metric("Last Sale", last_sale.strftime("%Y-%m-%d"))
+            
+            # Supplier Analysis
+            st.markdown("### 💰 Supplier Performance Comparison")
+            
+            supplier_stats = (
+                item_data.groupby("SUPPLIER_RESOLVED", dropna=False)
+                        .agg(
+                            UNITS=(units_col, "sum"),
+                            PROFIT=("PROFIT", "sum"),
+                            SALES=("TOTAL_SALES", "sum"),
+                            ACTIVE_DAYS=("DATE", "nunique")
+                        )
+                        .reset_index()
+            )
+            supplier_stats["PROFIT_PER_UNIT"] = np.where(
+                supplier_stats["UNITS"] > 0,
+                supplier_stats["PROFIT"] / supplier_stats["UNITS"],
+                0
+            ).round(4)
+            supplier_stats["AVG_UNITS_PER_DAY"] = np.where(
+                supplier_stats["ACTIVE_DAYS"] > 0,
+                supplier_stats["UNITS"] / supplier_stats["ACTIVE_DAYS"],
+                0
+            ).round(2)
+            
+            # Sort by profit descending
+            supplier_stats = supplier_stats.sort_values("PROFIT", ascending=False).reset_index(drop=True)
+            
+            if not supplier_stats.empty:
+                best_supplier = supplier_stats.iloc[0]
+                worst_supplier = supplier_stats.iloc[-1]
+                
+                col_best, col_worst = st.columns(2)
+                with col_best:
+                    st.markdown("#### 🏆 Most Profitable Supplier")
+                    st.success(
+                        f"**{best_supplier['SUPPLIER_RESOLVED']}**\n\n"
+                        f"- Units: {int(best_supplier['UNITS']):,}\n"
+                        f"- Profit: ${best_supplier['PROFIT']:,.2f}\n"
+                        f"- Profit/Unit: ${best_supplier['PROFIT_PER_UNIT']:.2f}\n"
+                        f"- Avg Units/Day: {best_supplier['AVG_UNITS_PER_DAY']:.2f}"
+                    )
+                
+                with col_worst:
+                    st.markdown("#### 🚨 Least Profitable Supplier")
+                    if worst_supplier['PROFIT'] < 0:
+                        st.error(
+                            f"**{worst_supplier['SUPPLIER_RESOLVED']}** ⚠️ LOSING MONEY\n\n"
+                            f"- Units: {int(worst_supplier['UNITS']):,}\n"
+                            f"- Profit: ${worst_supplier['PROFIT']:,.2f}\n"
+                            f"- Profit/Unit: ${worst_supplier['PROFIT_PER_UNIT']:.2f}\n"
+                            f"- Avg Units/Day: {worst_supplier['AVG_UNITS_PER_DAY']:.2f}"
+                        )
+                    else:
+                        st.warning(
+                            f"**{worst_supplier['SUPPLIER_RESOLVED']}**\n\n"
+                            f"- Units: {int(worst_supplier['UNITS']):,}\n"
+                            f"- Profit: ${worst_supplier['PROFIT']:,.2f}\n"
+                            f"- Profit/Unit: ${worst_supplier['PROFIT_PER_UNIT']:.2f}\n"
+                            f"- Avg Units/Day: {worst_supplier['AVG_UNITS_PER_DAY']:.2f}"
+                        )
+                
+                # Full supplier comparison table
+                st.markdown("#### 📋 All Suppliers - Detailed Breakdown")
+                st.dataframe(
+                    supplier_stats[["SUPPLIER_RESOLVED", "UNITS", "PROFIT", "SALES", "PROFIT_PER_UNIT", "AVG_UNITS_PER_DAY", "ACTIVE_DAYS"]],
+                    use_container_width=True,
+                    height=250
+                )
+            
+            # Visual Charts
+            st.markdown("### 📈 Visual Analytics")
+            
+            # Monthly trends
+            item_data["YEAR_MONTH"] = item_data["DATE"].dt.to_period("M").astype(str)
+            monthly = (
+                item_data.groupby("YEAR_MONTH")
+                        .agg(UNITS=(units_col, "sum"), PROFIT=("PROFIT", "sum"))
+                        .reset_index()
+                        .sort_values("YEAR_MONTH")
+            )
+            
+            chart_col1, chart_col2 = st.columns(2)
+            
+            with chart_col1:
+                if not monthly.empty:
+                    fig_units = px.bar(
+                        monthly,
+                        x="YEAR_MONTH",
+                        y="UNITS",
+                        title="Monthly Units Sold",
+                        labels={"YEAR_MONTH": "Month", "UNITS": "Units"},
+                        color_discrete_sequence=["#1f77b4"]
+                    )
+                    fig_units.update_layout(height=350)
+                    st.plotly_chart(fig_units, use_container_width=True)
+            
+            with chart_col2:
+                if not monthly.empty:
+                    fig_profit = px.bar(
+                        monthly,
+                        x="YEAR_MONTH",
+                        y="PROFIT",
+                        title="Monthly Profit",
+                        labels={"YEAR_MONTH": "Month", "PROFIT": "Profit ($)"},
+                        color="PROFIT",
+                        color_continuous_scale=["red", "yellow", "green"]
+                    )
+                    fig_profit.update_layout(height=350)
+                    st.plotly_chart(fig_profit, use_container_width=True)
+            
+            # Supplier comparison chart
+            if not supplier_stats.empty and len(supplier_stats) > 1:
+                fig_supplier = go.Figure()
+                fig_supplier.add_trace(go.Bar(
+                    name="Profit",
+                    x=supplier_stats["SUPPLIER_RESOLVED"],
+                    y=supplier_stats["PROFIT"],
+                    marker_color=["green" if p > 0 else "red" for p in supplier_stats["PROFIT"]]
+                ))
+                fig_supplier.update_layout(
+                    title="Supplier Profit Comparison",
+                    xaxis_title="Supplier",
+                    yaxis_title="Total Profit ($)",
+                    height=400
+                )
+                st.plotly_chart(fig_supplier, use_container_width=True)
+            
+            st.markdown("---")
 
 # ==========================================================
 # SECTION 1: SPACE OCCUPIERS (LOW-SELLERS) + EXCEL EXPORT
