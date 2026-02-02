@@ -1,7 +1,7 @@
 # ==========================================================
 # PLU Sales + Supplier Profitability Dashboard (CLEAN DF)
 # + Space Occupiers (Low-selling items) Export (latest stock)
-# + Consolidated Top Items (Custom Time Range + Optional Supplier Filter)
+# + Consolidated Top Items (Custom Time Range + Category Filter + Supplier Filter)
 #     - Toggle "Breakdown by supplier" for each item
 # + Fast / Slow Movers
 # ==========================================================
@@ -386,16 +386,16 @@ st.download_button(
 )
 
 # ==========================================================
-# SECTION 2: TOP ITEMS (Custom Time Range + Optional Supplier + Supplier Breakdown Toggle)
+# SECTION 2: TOP ITEMS (Custom Time Range + Category Filter + Supplier Filter + Supplier Breakdown Toggle)
 # ==========================================================
-st.subheader("🏆 Top Items (Custom Time Range + Optional Supplier Filter)")
+st.subheader("🏆 Top Items (Custom Time Range + Category & Supplier Filters)")
 st.caption(
-    "Pick a custom time range, optionally filter to a supplier, optionally search item name.\n"
+    "Pick a custom time range, optionally filter by category and/or supplier, optionally search item name.\n"
     "Toggle supplier breakdown to see per-supplier results for each item."
 )
 
 with st.expander("Open Top Items Filter", expanded=True):
-    t1, t2, t3, t4 = st.columns([1.2, 1.2, 1.2, 1.4])
+    t1, t2, t3 = st.columns([1.2, 1.2, 1.2])
     with t1:
         top_start = st.date_input(
             "Start",
@@ -414,7 +414,17 @@ with st.expander("Open Top Items Filter", expanded=True):
         )
     with t3:
         top_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS", "TOTAL_PROFIT"], index=0, key="top_rank")
+
+    # Category and Supplier filters in a new row
+    t4, t5 = st.columns([1.5, 1.5])
     with t4:
+        # Get all unique categories from the dataframe
+        categories_raw = df["CATEGORY"].dropna().unique().tolist()
+        categories_sorted = sorted([c for c in categories_raw if str(c).strip() != ""])
+        categories_all = ["All Categories", "No Category"] + categories_sorted
+        category_filter = st.selectbox("Category", categories_all, index=0, key="top_category")
+    
+    with t5:
         suppliers_all = ["All Suppliers"] + sorted(df["SUPPLIER_RESOLVED"].dropna().unique().tolist())
         supplier_filter = st.selectbox("Supplier", suppliers_all, index=0, key="top_supplier")
 
@@ -425,15 +435,23 @@ with st.expander("Open Top Items Filter", expanded=True):
     ts, te = clamp_date_range(pd.Timestamp(top_start), pd.Timestamp(top_end))
     top_df = df[(df["DATE"] >= ts) & (df["DATE"] <= te)].copy()
 
+    # Apply category filter
+    if category_filter == "No Category":
+        top_df = top_df[top_df["CATEGORY"].isna()].copy()
+    elif category_filter != "All Categories":
+        top_df = top_df[top_df["CATEGORY"] == category_filter].copy()
+
+    # Apply supplier filter
     if supplier_filter != "All Suppliers":
         top_df = top_df[top_df["SUPPLIER_RESOLVED"] == supplier_filter].copy()
 
+    # Apply search filter
     s = (top_search or "").strip().lower()
     if len(s) >= 3:
         top_df = top_df[top_df["DESCRIPTION"].str.lower().str.contains(s, na=False)].copy()
 
     if top_df.empty:
-        st.warning("No rows found for that filter (date range / supplier / search).")
+        st.warning("No rows found for that filter (date range / category / supplier / search).")
     else:
         sort_col = "TOTAL_UNITS" if top_rank_by == "TOTAL_UNITS" else "TOTAL_PROFIT"
 
@@ -456,7 +474,11 @@ with st.expander("Open Top Items Filter", expanded=True):
             top_items_df = top_items_df.drop(columns=["_ACTIVE_DAYS"])
             top_items_df = top_items_df.sort_values(sort_col, ascending=False).reset_index(drop=True)
 
-            st.write(f"Filter: **{ts.date()} → {te.date()}** | Supplier: **{supplier_filter}** | Rows: **{len(top_items_df)}**")
+            st.write(
+                f"Filter: **{ts.date()} → {te.date()}** | "
+                f"Category: **{category_filter}** | Supplier: **{supplier_filter}** | "
+                f"Rows: **{len(top_items_df)}**"
+            )
             st.dataframe(top_items_df.head(int(top_n)), use_container_width=True, height=420)
 
             st.download_button(
@@ -497,8 +519,9 @@ with st.expander("Open Top Items Filter", expanded=True):
             ).reset_index(drop=True)
 
             st.write(
-                f"Filter: **{ts.date()} → {te.date()}** | Supplier: **{supplier_filter}** "
-                f"| Breakdown rows: **{len(top_items_sup)}**"
+                f"Filter: **{ts.date()} → {te.date()}** | "
+                f"Category: **{category_filter}** | Supplier: **{supplier_filter}** | "
+                f"Breakdown rows: **{len(top_items_sup)}**"
             )
             st.dataframe(top_items_sup.head(int(top_n)), use_container_width=True, height=420)
 
