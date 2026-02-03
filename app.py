@@ -438,6 +438,19 @@ if search_query and len(search_query.strip()) >= 3:
             m4.metric("Avg Units/Day", f"{avg_units_per_day:.2f}")
             m5.metric("Days Active", f"{days_active}")
             
+            # Show ALL suppliers from GROUP field
+            st.markdown("### 📦 All Suppliers for This Item")
+            all_suppliers_for_item = set()
+            for suppliers_list in item_data["SUPPLIERS_LIST"].dropna():
+                if isinstance(suppliers_list, list):
+                    all_suppliers_for_item.update(suppliers_list)
+            
+            if all_suppliers_for_item:
+                suppliers_display = ", ".join(sorted(all_suppliers_for_item))
+                st.info(f"**Suppliers:** {suppliers_display}")
+            else:
+                st.warning("No suppliers found in GROUP field for this item")
+            
             # Supplier comparison - Get ALL suppliers from SUPPLIERS_LIST
             st.markdown("### 💰 Supplier Performance")
             
