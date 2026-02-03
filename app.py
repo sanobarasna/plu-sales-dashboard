@@ -719,9 +719,8 @@ with tab2:
         sort_col = "TOTAL_UNITS" if top_rank_by == "TOTAL_UNITS" else "TOTAL_PROFIT"
         
         if not breakdown:
-            top_items_df = top_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False).agg(TOTAL_UNITS=(units_col, "sum"), TOTAL_PROFIT=("PROFIT", "sum"), _ACTIVE_DAYS=("DATE", "nunique")).reset_index()
-            top_items_df["TOTAL_UNITS_PER_DAY"] = np.where(top_items_df["_ACTIVE_DAYS"] > 0, top_items_df["TOTAL_UNITS"] / top_items_df["_ACTIVE_DAYS"], 0).round(3)
-            top_items_df = top_items_df.drop(columns=["_ACTIVE_DAYS"]).sort_values(sort_col, ascending=False).reset_index(drop=True)
+            top_items_df = top_df.groupby(["PLU_CODE", "DESCRIPTION"], dropna=False).agg(TOTAL_UNITS=(units_col, "sum"), TOTAL_PROFIT=("PROFIT", "sum")).reset_index()
+            top_items_df = top_items_df.sort_values(sort_col, ascending=False).reset_index(drop=True)
             
             st.info(f"📅 **{ts.date()} → {te.date()}** | Category: **{category_filter}** | Supplier: **{supplier_filter}** | Items: **{len(top_items_df)}**")
             
@@ -733,10 +732,9 @@ with tab2:
             
             st.download_button("⬇️ Download Excel", data=df_to_excel_bytes(top_items_df, sheet_name="top_items"), file_name=f"top_items_{ts.date()}_to_{te.date()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         else:
-            top_items_sup = top_df.groupby(["PLU_CODE", "DESCRIPTION", "SUPPLIER_RESOLVED"], dropna=False).agg(TOTAL_UNITS=(units_col, "sum"), TOTAL_PROFIT=("PROFIT", "sum"), TOTAL_SALES=("TOTAL_SALES", "sum"), _ACTIVE_DAYS=("DATE", "nunique")).reset_index()
-            top_items_sup["TOTAL_UNITS_PER_DAY"] = np.where(top_items_sup["_ACTIVE_DAYS"] > 0, top_items_sup["TOTAL_UNITS"] / top_items_sup["_ACTIVE_DAYS"], 0).round(3)
+            top_items_sup = top_df.groupby(["PLU_CODE", "DESCRIPTION", "SUPPLIER_RESOLVED"], dropna=False).agg(TOTAL_UNITS=(units_col, "sum"), TOTAL_PROFIT=("PROFIT", "sum"), TOTAL_SALES=("TOTAL_SALES", "sum")).reset_index()
             top_items_sup["PROFIT_PER_UNIT"] = np.where(top_items_sup["TOTAL_UNITS"] > 0, top_items_sup["TOTAL_PROFIT"] / top_items_sup["TOTAL_UNITS"], 0).round(4)
-            top_items_sup = top_items_sup.drop(columns=["_ACTIVE_DAYS"]).sort_values([sort_col, "TOTAL_UNITS"], ascending=[False, False]).reset_index(drop=True)
+            top_items_sup = top_items_sup.sort_values([sort_col, "TOTAL_UNITS"], ascending=[False, False]).reset_index(drop=True)
             
             st.info(f"📅 **{ts.date()} → {te.date()}** | Category: **{category_filter}** | Supplier: **{supplier_filter}** | Rows: **{len(top_items_sup)}**")
             
