@@ -548,7 +548,17 @@ with metric1:
 with metric2:
     st.metric("📦 Units Sold (30d)", f"{int(total_units_30d):,}")
 with metric3:
-    st.metric("🏆 Top Seller (30d)", top_item_30d)
+    # Use custom HTML to prevent truncation
+    st.markdown(f"""
+        <div style="padding: 0.5rem 0;">
+            <div style="font-size: 0.85rem; font-weight: 500; opacity: 0.9; margin-bottom: 0.25rem;">
+                🏆 Top Seller (30d)
+            </div>
+            <div style="font-size: 1.8rem; font-weight: 600; line-height: 1.3; word-wrap: break-word;">
+                {top_item_30d}
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
 with metric4:
     st.metric("⚠️ Low Stock Items", f"{low_stock_count}")
 
