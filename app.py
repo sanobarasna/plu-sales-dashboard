@@ -672,6 +672,14 @@ with tab2:
         te = max_date
         top_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS", "TOTAL_PROFIT"], index=0, key="top_rank_all")
     
+    # Add item selection mode
+    item_selection_mode = st.radio(
+        "Show Items:",
+        ["Top N Items", "All Items"],
+        horizontal=True,
+        key="top_items_selection_mode"
+    )
+    
     t4, t5, t6 = st.columns(3)
     with t4:
         categories_raw = df["CATEGORY"].dropna().unique().tolist()
@@ -682,7 +690,11 @@ with tab2:
         suppliers_all = ["All Suppliers"] + sorted(df["SUPPLIER_RESOLVED"].dropna().unique().tolist())
         supplier_filter = st.selectbox("Supplier", suppliers_all, index=0, key="top_supplier")
     with t6:
-        top_n = st.number_input("Top N", min_value=10, max_value=5000, value=50, step=10, key="top_n")
+        if item_selection_mode == "Top N Items":
+            top_n = st.number_input("Top N", min_value=10, max_value=5000, value=50, step=10, key="top_n")
+        else:
+            st.markdown("<div style='padding: 0.5rem 0;'><div style='font-size: 0.85rem; opacity: 0.7;'>Showing all items</div></div>", unsafe_allow_html=True)
+            top_n = None  # Will show all items
     
     top_search = st.text_input("Search item (optional)", value="", key="top_search", placeholder="Min 3 letters...")
     breakdown = st.toggle("Breakdown by supplier", value=False, key="top_breakdown")
@@ -712,7 +724,13 @@ with tab2:
             top_items_df = top_items_df.drop(columns=["_ACTIVE_DAYS"]).sort_values(sort_col, ascending=False).reset_index(drop=True)
             
             st.info(f"📅 **{ts.date()} → {te.date()}** | Category: **{category_filter}** | Supplier: **{supplier_filter}** | Items: **{len(top_items_df)}**")
-            st.dataframe(top_items_df.head(int(top_n)), use_container_width=True, height=400)
+            
+            # Display based on selection mode
+            if item_selection_mode == "Top N Items" and top_n is not None:
+                st.dataframe(top_items_df.head(int(top_n)), use_container_width=True, height=400)
+            else:
+                st.dataframe(top_items_df, use_container_width=True, height=400)
+            
             st.download_button("⬇️ Download Excel", data=df_to_excel_bytes(top_items_df, sheet_name="top_items"), file_name=f"top_items_{ts.date()}_to_{te.date()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         else:
             top_items_sup = top_df.groupby(["PLU_CODE", "DESCRIPTION", "SUPPLIER_RESOLVED"], dropna=False).agg(TOTAL_UNITS=(units_col, "sum"), TOTAL_PROFIT=("PROFIT", "sum"), TOTAL_SALES=("TOTAL_SALES", "sum"), _ACTIVE_DAYS=("DATE", "nunique")).reset_index()
@@ -721,7 +739,13 @@ with tab2:
             top_items_sup = top_items_sup.drop(columns=["_ACTIVE_DAYS"]).sort_values([sort_col, "TOTAL_UNITS"], ascending=[False, False]).reset_index(drop=True)
             
             st.info(f"📅 **{ts.date()} → {te.date()}** | Category: **{category_filter}** | Supplier: **{supplier_filter}** | Rows: **{len(top_items_sup)}**")
-            st.dataframe(top_items_sup.head(int(top_n)), use_container_width=True, height=400)
+            
+            # Display based on selection mode
+            if item_selection_mode == "Top N Items" and top_n is not None:
+                st.dataframe(top_items_sup.head(int(top_n)), use_container_width=True, height=400)
+            else:
+                st.dataframe(top_items_sup, use_container_width=True, height=400)
+            
             st.download_button("⬇️ Download Excel", data=df_to_excel_bytes(top_items_sup, sheet_name="top_items_supplier"), file_name=f"top_items_supplier_{ts.date()}_to_{te.date()}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
 # ==========================================================
