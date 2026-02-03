@@ -438,15 +438,36 @@ if search_query and len(search_query.strip()) >= 3:
             m4.metric("Avg Units/Day", f"{avg_units_per_day:.2f}")
             m5.metric("Days Active", f"{days_active}")
             
-            # Supplier comparison
+            # Supplier comparison - Get ALL suppliers from SUPPLIERS_LIST
             st.markdown("### 💰 Supplier Performance")
-            supplier_stats = (
-                item_data.groupby("SUPPLIER_RESOLVED", dropna=False)
-                        .agg(UNITS=(units_col, "sum"), PROFIT=("PROFIT", "sum"), SALES=("TOTAL_SALES", "sum"))
-                        .reset_index()
-            )
-            supplier_stats["PROFIT_PER_UNIT"] = np.where(supplier_stats["UNITS"] > 0, supplier_stats["PROFIT"] / supplier_stats["UNITS"], 0).round(4)
-            supplier_stats = supplier_stats.sort_values("PROFIT", ascending=False).reset_index(drop=True)
+            
+            # Explode SUPPLIERS_LIST to get all suppliers for this item
+            item_suppliers_expanded = item_data.copy()
+            item_suppliers_expanded = item_suppliers_expanded[item_suppliers_expanded["SUPPLIERS_LIST"].apply(lambda x: isinstance(x, list) and len(x) > 0)]
+            
+            if not item_suppliers_expanded.empty:
+                # Explode the suppliers list to create one row per supplier
+                item_suppliers_expanded = item_suppliers_expanded.explode("SUPPLIERS_LIST")
+                item_suppliers_expanded = item_suppliers_expanded[item_suppliers_expanded["SUPPLIERS_LIST"].notna()]
+                
+                supplier_stats = (
+                    item_suppliers_expanded.groupby("SUPPLIERS_LIST", dropna=False)
+                            .agg(UNITS=(units_col, "sum"), PROFIT=("PROFIT", "sum"), SALES=("TOTAL_SALES", "sum"))
+                            .reset_index()
+                            .rename(columns={"SUPPLIERS_LIST": "SUPPLIER"})
+                )
+                supplier_stats["PROFIT_PER_UNIT"] = np.where(supplier_stats["UNITS"] > 0, supplier_stats["PROFIT"] / supplier_stats["UNITS"], 0).round(4)
+                supplier_stats = supplier_stats.sort_values("PROFIT", ascending=False).reset_index(drop=True)
+            else:
+                # Fallback to SUPPLIER_RESOLVED if no SUPPLIERS_LIST available
+                supplier_stats = (
+                    item_data.groupby("SUPPLIER_RESOLVED", dropna=False)
+                            .agg(UNITS=(units_col, "sum"), PROFIT=("PROFIT", "sum"), SALES=("TOTAL_SALES", "sum"))
+                            .reset_index()
+                            .rename(columns={"SUPPLIER_RESOLVED": "SUPPLIER"})
+                )
+                supplier_stats["PROFIT_PER_UNIT"] = np.where(supplier_stats["UNITS"] > 0, supplier_stats["PROFIT"] / supplier_stats["UNITS"], 0).round(4)
+                supplier_stats = supplier_stats.sort_values("PROFIT", ascending=False).reset_index(drop=True)
             
             if not supplier_stats.empty:
                 best = supplier_stats.iloc[0]
@@ -454,12 +475,12 @@ if search_query and len(search_query.strip()) >= 3:
                 
                 c1, c2 = st.columns(2)
                 with c1:
-                    st.success(f"🏆 **Best:** {best['SUPPLIER_RESOLVED']} | Profit: ${best['PROFIT']:,.2f} | Profit/Unit: ${best['PROFIT_PER_UNIT']:.2f}")
+                    st.success(f"🏆 **Best:** {best['SUPPLIER']} | Profit: ${best['PROFIT']:,.2f} | Profit/Unit: ${best['PROFIT_PER_UNIT']:.2f}")
                 with c2:
                     if worst['PROFIT'] < 0:
-                        st.error(f"🚨 **Worst:** {worst['SUPPLIER_RESOLVED']} | Profit: ${worst['PROFIT']:,.2f} | Profit/Unit: ${worst['PROFIT_PER_UNIT']:.2f}")
+                        st.error(f"🚨 **Worst:** {worst['SUPPLIER']} | Profit: ${worst['PROFIT']:,.2f} | Profit/Unit: ${worst['PROFIT_PER_UNIT']:.2f}")
                     else:
-                        st.warning(f"⚠️ **Worst:** {worst['SUPPLIER_RESOLVED']} | Profit: ${worst['PROFIT']:,.2f} | Profit/Unit: ${worst['PROFIT_PER_UNIT']:.2f}")
+                        st.warning(f"⚠️ **Worst:** {worst['SUPPLIER']} | Profit: ${worst['PROFIT']:,.2f} | Profit/Unit: ${worst['PROFIT_PER_UNIT']:.2f}")
                 
                 st.dataframe(supplier_stats, use_container_width=True, height=200)
             
