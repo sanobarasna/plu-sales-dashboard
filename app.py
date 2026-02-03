@@ -64,6 +64,22 @@ st.markdown("""
         background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
     }
     
+    /* Make metric values smaller and more elegant */
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem !important;
+        font-weight: 600 !important;
+    }
+    
+    [data-testid="stMetricLabel"] {
+        font-size: 0.85rem !important;
+        font-weight: 500 !important;
+        opacity: 0.9;
+    }
+    
+    [data-testid="stMetricDelta"] {
+        font-size: 0.75rem !important;
+    }
+    
     /* Section cards */
     .section-card {
         background: white;
@@ -526,13 +542,16 @@ total_units_30d = float(recent_df[units_col].sum())
 top_item_30d = recent_df.groupby("DESCRIPTION")[units_col].sum().idxmax() if not recent_df.empty else "N/A"
 low_stock_count = len(latest_stock_per_item(df)[latest_stock_per_item(df)["LATEST_STOCK"] < 10])
 
+# Truncate top seller name if too long
+top_item_display = top_item_30d if len(str(top_item_30d)) < 20 else str(top_item_30d)[:17] + "..."
+
 metric1, metric2, metric3, metric4 = st.columns(4)
 with metric1:
-    st.metric("💰 Profit (30d)", f"${total_profit_30d:,.2f}")
+    st.metric("💰 Profit (30d)", f"${total_profit_30d:,.0f}")
 with metric2:
     st.metric("📦 Units Sold (30d)", f"{int(total_units_30d):,}")
 with metric3:
-    st.metric("🏆 Top Seller (30d)", top_item_30d if len(str(top_item_30d)) < 25 else str(top_item_30d)[:22] + "...")
+    st.metric("🏆 Top Seller (30d)", top_item_display)
 with metric4:
     st.metric("⚠️ Low Stock Items", f"{low_stock_count}")
 
