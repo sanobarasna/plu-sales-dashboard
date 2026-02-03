@@ -542,16 +542,13 @@ total_units_30d = float(recent_df[units_col].sum())
 top_item_30d = recent_df.groupby("DESCRIPTION")[units_col].sum().idxmax() if not recent_df.empty else "N/A"
 low_stock_count = len(latest_stock_per_item(df)[latest_stock_per_item(df)["LATEST_STOCK"] < 10])
 
-# Truncate top seller name if too long
-top_item_display = top_item_30d if len(str(top_item_30d)) < 20 else str(top_item_30d)[:17] + "..."
-
 metric1, metric2, metric3, metric4 = st.columns(4)
 with metric1:
     st.metric("💰 Profit (30d)", f"${total_profit_30d:,.0f}")
 with metric2:
     st.metric("📦 Units Sold (30d)", f"{int(total_units_30d):,}")
 with metric3:
-    st.metric("🏆 Top Seller (30d)", top_item_display)
+    st.metric("🏆 Top Seller (30d)", top_item_30d)
 with metric4:
     st.metric("⚠️ Low Stock Items", f"{low_stock_count}")
 
