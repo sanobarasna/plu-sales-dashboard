@@ -648,13 +648,29 @@ with tab1:
 with tab2:
     st.markdown("### 🏆 Top Items Performance")
     
-    t1, t2, t3 = st.columns(3)
-    with t1:
-        top_start = st.date_input("Start", value=(max_date - pd.Timedelta(days=30)).date(), min_value=min_date.date(), max_value=max_date.date(), key="top_start")
-    with t2:
-        top_end = st.date_input("End", value=max_date.date(), min_value=min_date.date(), max_value=max_date.date(), key="top_end")
-    with t3:
-        top_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS", "TOTAL_PROFIT"], index=0, key="top_rank")
+    # Add time range selection option
+    time_range_option = st.radio(
+        "Select Time Range:",
+        ["Custom Range", "All Time"],
+        horizontal=True,
+        key="top_items_time_range"
+    )
+    
+    if time_range_option == "Custom Range":
+        t1, t2, t3 = st.columns(3)
+        with t1:
+            top_start = st.date_input("Start", value=(max_date - pd.Timedelta(days=30)).date(), min_value=min_date.date(), max_value=max_date.date(), key="top_start")
+        with t2:
+            top_end = st.date_input("End", value=max_date.date(), min_value=min_date.date(), max_value=max_date.date(), key="top_end")
+        with t3:
+            top_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS", "TOTAL_PROFIT"], index=0, key="top_rank")
+        
+        ts, te = clamp_date_range(pd.Timestamp(top_start), pd.Timestamp(top_end))
+    else:
+        # All Time - use entire dataset
+        ts = min_date
+        te = max_date
+        top_rank_by = st.selectbox("Rank by", ["TOTAL_UNITS", "TOTAL_PROFIT"], index=0, key="top_rank_all")
     
     t4, t5, t6 = st.columns(3)
     with t4:
@@ -671,7 +687,6 @@ with tab2:
     top_search = st.text_input("Search item (optional)", value="", key="top_search", placeholder="Min 3 letters...")
     breakdown = st.toggle("Breakdown by supplier", value=False, key="top_breakdown")
     
-    ts, te = clamp_date_range(pd.Timestamp(top_start), pd.Timestamp(top_end))
     top_df = df[(df["DATE"] >= ts) & (df["DATE"] <= te)].copy()
     
     if category_filter == "No Category":
