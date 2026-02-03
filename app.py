@@ -514,16 +514,22 @@ if search_query and len(search_query.strip()) >= 3:
                 st.dataframe(supplier_stats, use_container_width=True, height=200)
             
             # Charts
-            item_data["YEAR_MONTH"] = item_data["DATE"].dt.to_period("M").astype(str)
+            item_data["YEAR_MONTH"] = item_data["DATE"].dt.strftime("%Y-%m")  # Format as "2024-11"
             monthly = item_data.groupby("YEAR_MONTH").agg(UNITS=(units_col, "sum"), PROFIT=("PROFIT", "sum")).reset_index().sort_values("YEAR_MONTH")
             
             if not monthly.empty:
                 ch1, ch2 = st.columns(2)
                 with ch1:
-                    fig = px.bar(monthly, x="YEAR_MONTH", y="UNITS", title="Monthly Units")
+                    fig = px.bar(monthly, x="YEAR_MONTH", y="UNITS", title="Monthly Units",
+                                labels={"YEAR_MONTH": "Month", "UNITS": "Units Sold"})
+                    fig.update_xaxes(type='category')  # Treat as categorical, not datetime
                     st.plotly_chart(fig, use_container_width=True)
                 with ch2:
-                    fig = px.bar(monthly, x="YEAR_MONTH", y="PROFIT", title="Monthly Profit", color="PROFIT", color_continuous_scale=["red", "yellow", "green"])
+                    fig = px.bar(monthly, x="YEAR_MONTH", y="PROFIT", title="Monthly Profit", 
+                                color="PROFIT",
+                                labels={"YEAR_MONTH": "Month", "PROFIT": "Profit ($)"},
+                                color_continuous_scale=["red", "yellow", "green"])
+                    fig.update_xaxes(type='category')  # Treat as categorical, not datetime
                     st.plotly_chart(fig, use_container_width=True)
             
             st.markdown("---")
